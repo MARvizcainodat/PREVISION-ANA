@@ -65,6 +65,23 @@
 #prevision tfoot td{font-weight:700; border-top:2px solid var(--pv-line)}
 
 [hidden]{display:none!important}
+#prevision .pv-tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--pv-line)}
+#prevision .pv-tabs button{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;padding:8px 14px;color:var(--pv-muted)}
+#prevision .pv-tabs button[aria-selected=true]{color:var(--pv-fg);border-bottom-color:var(--pv-accent)}
+#prevision .pv-barra span[id^=pv-ctl]{display:inline-flex;gap:8px;align-items:center}
+#prevision input[type=month]{font:inherit;padding:6px 8px;border:1px solid var(--pv-line);border-radius:6px;background:var(--pv-card);color:var(--pv-fg)}
+#prevision .chip.ok{background:var(--pv-accent-soft);color:var(--pv-pos)}
+#prevision .pg-tabla tr.sec td{background:var(--pv-bg);font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;font-weight:700;color:var(--pv-accent);padding-top:12px}
+#prevision .pg-tabla tr.hecho td{color:var(--pv-muted)}
+#prevision .pg-tabla tr.hecho td.num{text-decoration:line-through}
+#prevision .pg-tabla .sub{display:block;font-size:.78rem;color:var(--pv-muted)}
+#prevision .pg-tabla tfoot tr.muted td{color:var(--pv-muted);font-weight:400}
+#prevision .pg-tabla tfoot tr.dif td{font-size:1.02rem}
+#prevision .pg-tabla select,#prevision .pg-tabla input.pg-imp{font:inherit;font-size:.82rem;padding:2px 6px;border:1px solid var(--pv-line);border-radius:4px;background:var(--pv-bg);color:var(--pv-fg);max-width:100%}
+#prevision .pg-tabla input.pg-imp{width:8em;text-align:right;font-family:var(--pv-num)}
+#prevision .pg-tabla .pv-nota div+div{margin-top:4px}
+#prevision .pv-kpi.falta{border-color:var(--pv-neg)}
+@media print{#prevision .pv-tabs,#prevision select{display:none!important}}
 #prevision button.mini{padding:2px 8px;font-size:.75rem;font-weight:600}
 #prevision .pv-nueva{display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px 0}
 #prevision .pv-nueva input{font:inherit;padding:4px 8px;border:1px solid var(--pv-line);border-radius:4px;background:var(--pv-bg);color:var(--pv-fg);min-width:0}
@@ -115,9 +132,12 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
   <div class="pv-top">
     <h2>Previsión de tesorería</h2>
     <div class="pv-barra">
-      <label for="pv-fecha">A fecha</label>
+      <span id="pv-ctl-fecha"><label for="pv-fecha">A fecha</label>
       <input type="date" id="pv-fecha">
-      <button type="button" id="pv-hoy">Hoy</button>
+      <button type="button" id="pv-hoy">Hoy</button></span>
+      <span id="pv-ctl-mes" hidden><label for="pg-mes">Mes</label>
+      <input type="month" id="pg-mes">
+      <button type="button" id="pg-este">Este mes</button></span>
       <button type="button" id="pv-btn-print" disabled>Imprimir</button>
       <button type="button" id="pv-btn-xlsx" class="prim" disabled>Descargar Excel</button>
       <button type="button" id="pv-recargar" hidden>Actualizar datos</button>
@@ -131,8 +151,10 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     <input type="password" id="pv-clave" autocomplete="current-password" required>
     <button type="submit" class="prim">Entrar</button>
   </form>
+  <div class="pv-tabs" role="tablist"><button type="button" role="tab" data-tab="prev">Previsión</button><button type="button" role="tab" data-tab="pagos">Pagos por banco</button></div>
   <p class="pv-error" id="pv-error" role="status"></p>
   <div id="pv-cuerpo"></div>
+  <div id="pg-cuerpo" hidden></div>
 </div></div>
 <script>
 /* ===== PREVISIÓN DE TESORERÍA: cálculo a una fecha =====
@@ -166,7 +188,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     const pagOut=porFactura(t.invoiceOutPayments), pagIn=porFactura(t.invoiceInPayments);
 
     /* ---- VENTAS ---- */
-    const ventas=[], cartera=[];
+    const ventas=[], cartera=[], vencidosCobro=[], vencidosPago=[];
     (t.invoicesOut||[]).forEach(f=>{
       if(!f.date||f.date>corte) return;                         // aún no emitida
       const pagos=(pagOut[f.id]||[]).filter(p=>fRecibido(p)<=corte);
@@ -177,6 +199,9 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
       pagos.forEach(p=>{
         const c=fCobro(p);
         if(c && c<=corte) return;                               // ya cobrado en esa fecha
+        const rem=(p.remesado||p.negotiated) && (p.remittanceDate||'')<=corte;
+        if(rem) return;                                          // remesado o negociado: ya no está en cartera
+        if(p.dueDate && p.dueDate<=corte){ vencidosCobro.push({vence:p.dueDate,importe:r2(+p.amount||0)}); return; }  // vencido = cobrado
         cartera.push({numero:f.number,nombre:cli[f.clientId]||'—',vence:p.dueDate||'',tipo:p.method||'',remesado:!!(p.remesado||p.negotiated),importe:r2(+p.amount||0)});
       });
     });
@@ -193,6 +218,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
       pagos.forEach(p=>{
         const c=fPago(p);
         if(c && c<=corte) return;
+        if(p.dueDate && p.dueDate<=corte){ vencidosPago.push({vence:p.dueDate,importe:r2(+p.amount||0)}); return; }   // vencido = pagado
         efectos.push({numero:f.number,nombre:pro[f.supplierId]||'—',vence:p.dueDate||'',tipo:p.method||'',importe:r2(+p.amount||0)});
       });
     });
@@ -203,6 +229,10 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     const bancos=(t.bankAccounts||[]).filter(a=>!a.archived&&!a.type)        // fuera confirmings y líneas de descuento
       .map(a=>({nombre:a.name,fecha:ult[a.id]?.date||'',importe:r2(ult[a.id]?.amount||0),sinSaldo:!ult[a.id]}));
     if(ult.cash && ult.cash.amount) bancos.push({nombre:'CAJA',fecha:ult.cash.date,importe:r2(ult.cash.amount)});
+    // Pagarés vencidos después del último saldo del banco principal: aún no están en ese saldo
+    const princ=(t.bankAccounts||[]).find(a=>a.main)||(t.bankAccounts||[]).find(a=>!a.type);
+    const desde=princ&&ult[princ.id]?ult[princ.id].date:'';
+    const sinSaldo={desde,cobros:sum(vencidosCobro.filter(x=>x.vence>desde)),pagos:sum(vencidosPago.filter(x=>x.vence>desde))};
     (extras||[]).forEach(e=>bancos.push({nombre:e.nombre,fecha:'',importe:r2(+e.importe||0),manual:true,clave:e.clave}));
 
     /* ---- FUTURO: lo que vence hasta la fecha pasa por el banco ---- */
@@ -229,7 +259,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     const tVentas=sum(ventas),tCartera=sum(cartera),tBancos=sum(bancos),tCompras=sum(compras),tPagares=sum(pagaresMes);
     const totalVentas=r2(tVentas+tCartera+tBancos), totalCompras=r2(tCompras+tPagares);
     const primerSaldo=(t.bankBalances||[]).map(b=>b.date).sort()[0]||'';
-    return {hoy,fecha,futuro,primerSaldo,ventas,cartera,compras,pagaresMes,bancos,cobradoPrevisto,pagadoPrevisto,
+    return {hoy,fecha,futuro,primerSaldo,sinSaldo,ventas,cartera,compras,pagaresMes,bancos,cobradoPrevisto,pagadoPrevisto,
       tVentas,tCartera,tBancos,tCompras,tPagares,totalVentas,totalCompras,diferencia:r2(totalVentas-totalCompras)};
   };
 })();
@@ -289,13 +319,230 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
 
 </script>
 <script>
+/* ===== PAGOS POR BANCO (la hoja mensual de Ana) =====
+   Filas: gastos fijos y nóminas, pagarés a pagar y otros gastos del mes.
+   Columnas: un banco cada una. Abajo: pendiente, saldo de hoy y diferencia. */
+(function(){
+  const r2=x=>Math.round(x*100)/100;
+  const num=x=>{const [e,d]=Math.abs(x).toFixed(2).split('.');return (x<0?'−':'')+e.replace(/\B(?=(\d{3})+(?!\d))/g,'.')+','+d};
+  const eur=x=>num(x)+' €';
+  const fd=s=>s?s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4):'';
+  const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const leer=(k,def)=>{try{const v=JSON.parse(localStorage.getItem(k));return v??def}catch(e){return def}};
+  const guardar=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+  const hoyISO=()=>{const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)};
+  const ultimoDia=m=>new Date(+m.slice(0,4),+m.slice(5,7),0).getDate();
+  const mesesEntre=(a,b)=>(+b.slice(0,4)-+a.slice(0,4))*12+(+b.slice(5,7)-+a.slice(5,7));
+  const sumarDias=(s,n)=>{const d=new Date(s+'T12:00:00');d.setDate(d.getDate()+n);return d.toISOString().slice(0,10)};
+  const MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const EFECTOS=['Pagaré','Confirming','Cheque'];
+  // Mismos grupos y mismo orden que la lista de gastos fijos de tesorería
+  const GRUPOS=[['personal','Personal: nóminas, seguros sociales, retenciones y autónomos'],['hacienda','Hacienda e impuestos'],['banco','Bancos, préstamos y leasing'],
+    ['seguros','Seguros'],['suministros','Suministros: luz, agua, teléfono'],['servicios','Servicios: gestoría, alquileres y otros']];
+  const sinTildes=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  function grupo(e){
+    if(e.group&&GRUPOS.some(g=>g[0]===e.group)) return e.group;
+    const t=sinTildes(e.concept);
+    if(e.category==='nomina'||/nomina|seguridad social|seguros sociales|\btc1?\b|retencion|irpf|mod(elo)?\.? ?111|autonomo|reta\b/.test(t)) return 'personal';
+    if(/seguro|vida|poliza|mapfre|allianz|axa|mutua|caser|zurich|generali|ocaso|liberty|helvetia/.test(t)) return 'seguros';
+    if(e.category==='impuesto'||/\biva\b|hacienda|aeat|aplazamiento|fraccion|diputacion|ibi|\biae\b|impuesto|tasa|modelo|suma\b|ivtm|circulacion/.test(t)) return 'hacienda';
+    if(e.category==='prestamo'||/prestamo|leasing|renting|banco|comision|tarjeta|santander|unicaja|caixa|bbva|sabadell|cajamar|credito/.test(t)) return 'banco';
+    if(/luz|agua|telefono|movil|orange|movistar|vodafone|yoigo|digi|masmovil|internet|fibra|endesa|iberdrola|naturgy|repsol|electric|gasoil|combustible|aqualia|somos/.test(t)) return 'suministros';
+    return 'servicios';
+  }
+  const rango=e=>GRUPOS.findIndex(g=>g[0]===grupo(e));
+
+  let elecciones=leer('pagos.bancos',{});     // pagaré sin banco -> banco elegido
+  let importes=leer('pagos.importes',{});     // gasto fijo sin importe en datt -> importe escrito
+  let ULT=null;
+
+  /* Fechas en que toca un gasto fijo dentro del mes */
+  function fechasDelMes(f,M){
+    const base=f.nextDate; if(!base) return [];
+    const paso={mensual:1,bimestral:2,trimestral:3,semestral:6,anual:12}[f.frequency||'mensual'];
+    let fechas=[];
+    if(paso){
+      const dif=mesesEntre(base.slice(0,7),M);
+      if(((dif%paso)+paso)%paso!==0) return [];
+      fechas=[M+'-'+String(Math.min(+base.slice(8,10),ultimoDia(M))).padStart(2,'0')];
+    }else{
+      const n=f.frequency==='semanal'?7:f.frequency==='quincenal'?14:0; if(!n) return [];
+      let d=base; while(d.slice(0,7)>M) d=sumarDias(d,-n); while(d.slice(0,7)<M) d=sumarDias(d,n);
+      while(d.slice(0,7)===M){fechas.push(d);d=sumarDias(d,n);}
+    }
+    if(f.lastDate) fechas=fechas.filter(x=>x<=f.lastDate);
+    return fechas;
+  }
+
+  window.calcularPagos=function(t,M){
+    const hoy=hoyISO();
+    const cuentas=(t.bankAccounts||[]).filter(a=>!a.archived&&!a.type);
+    cuentas.sort((a,b)=>(a.main?1:0)-(b.main?1:0));              // como Ana: Unicaja y luego Santander
+    const principal=(cuentas.find(a=>a.main)||cuentas[0]||{}).id;
+    const porNombre={}; cuentas.forEach(a=>porNombre[a.name.toUpperCase()]=a.id);
+    const idBanco=v=>{ if(!v) return ''; if(v==='cash') return 'cash'; if(cuentas.some(a=>a.id===v)) return v; return porNombre[String(v).toUpperCase()]||''; };
+    const pro={}; (t.suppliers||[]).forEach(s=>pro[s.id]=s.name);
+    const fIn={}; (t.invoicesIn||[]).forEach(f=>fIn[f.id]=f);
+
+    /* ---- Gastos fijos y nóminas ---- */
+    const fijos=[];
+    // IVA trimestral (igual que tesorería): si el trimestre está fraccionado o pagado entero, aquí no sale como IVA;
+    // salen sus plazos (gastos fijos) o su pago (otros gastos). Si está pendiente, se estima con las facturas.
+    const ivaQ=(t.fixedExpenses||[]).concat(t.oneOffExpenses||[]).map(e=>e.ivaQuarter).filter(Boolean);
+    const qDelMes=m=>{const y=+m.slice(0,4),mm=+m.slice(5,7);return mm===1?(y-1)+'-4T':[4,7,10].includes(mm)?y+'-'+(mm-1)/3+'T':'';};
+    const netoIva=qid=>{const y=+qid.slice(0,4),q=+qid[5],a=y+'-'+String(q*3-2).padStart(2,'0')+'-01',z=y+'-'+String(q*3).padStart(2,'0')+'-31';
+      const en=i=>i.date&&i.date>=a&&i.date<=z&&!i.ivaExempt; const s=l=>(l||[]).filter(en).reduce((x,i)=>x+(+i.amount||0),0);
+      return Math.max(0,r2((s(t.invoicesOut)-s(t.invoicesIn))*21/121));};
+    (t.fixedExpenses||[]).forEach(f=>{
+      if(f.category==='impuesto'&&f.autoIvaCalc){
+        const qid=qDelMes(M); if(!qid||ivaQ.includes(qid)) return;
+        const fecha=qid.endsWith('4T')?M+'-30':M+'-20', clave=f.id+'|'+M, escrito=clave in importes, imp=escrito?r2(importes[clave]):netoIva(qid);
+        fijos.push({tipo:'fijo',clave,grupo:1,concepto:'IVA '+qid.slice(5)+' '+qid.slice(0,4)+' (sin pagar ni fraccionar · estimado)',fecha,banco:idBanco(f.bank)||principal,
+          importe:imp,escrito:true,sinImporte:false,pagado:0,pendiente:imp,estado:fecha<hoy?'pendiente':'pendiente'});
+        return;
+      }
+      // Fraccionamientos con calendario (p. ej. IVA de Hacienda): se usan las fechas e importes exactos de cada plazo
+      const plazos=Array.isArray(f.installments)?f.installments.filter(x=>x.date&&x.date.slice(0,7)===M):null;
+      const fechas=plazos?plazos.map(x=>x.date):fechasDelMes(f,M); if(!fechas.length) return;
+      const clave=f.id+'|'+M;
+      let importe=plazos?r2(plazos.reduce((s,x)=>s+(+x.principal||0)+(+x.surcharge||0)+(+x.interest||0),0))
+        :f.amount!=null&&f.amount!==''?r2(+f.amount*fechas.length):null;
+      const escrito=importe==null&&clave in importes;
+      if(importe==null&&escrito) importe=r2(importes[clave]);
+      const pagosGasto=(t.fixedExpensePayments||[]).filter(p=>p.expenseId===f.id);
+      let pagado=r2(pagosGasto.filter(p=>p.month===M).reduce((s,p)=>s+(+p.amount||0),0));
+      // Fechas anteriores a la "próxima fecha" de datt ya están atendidas.
+      // Si el gasto nunca tuvo pagos apuntados, se entiende que aún no había empezado y no sale.
+      const anterior=fechas[fechas.length-1]<f.nextDate;
+      if(anterior&&!pagosGasto.length) return;
+      if(anterior&&importe!=null&&pagado<importe) pagado=importe;
+      let definitivo=null;
+      if(f.supplierId&&!plazos){
+        const fr=(t.invoicesIn||[]).filter(i=>i.supplierId===f.supplierId&&(i.date||'').slice(0,7)===M);
+        if(fr.length){
+          importe=r2(fr.reduce((x,i)=>x+(+i.amount||0),0)); definitivo=true;
+          const pIn=(t.invoiceInPayments||[]);
+          pagado=r2(pagado+fr.reduce((x,i)=>{const ps=pIn.filter(p=>p.invoiceId===i.id); return x+(ps.length?ps.filter(p=>p.paid).reduce((y,p)=>y+(+p.amount||0),0):(i.paid?(+i.amount||0):0));},0));
+        } else definitivo=false;
+      }
+      const pendiente=importe==null?0:Math.max(0,r2(importe-pagado));
+      fijos.push({tipo:'fijo',clave,grupo:rango(f),definitivo,concepto:f.concept,nomina:f.category==='nomina',fecha:fechas[0],banco:idBanco(f.bank)||principal,
+        importe:importe??0,sinImporte:importe==null,escrito,pagado,pendiente,estado:importe==null?(anterior?'pagado':'sin'):pendiente<=0.005?'pagado':pagado>0?'parcial':'pendiente'});
+    });
+    fijos.sort((a,b)=>(a.grupo-b.grupo)||(b.nomina-a.nomina)||a.fecha.localeCompare(b.fecha));
+
+    /* ---- Pagarés a pagar que vencen en el mes ---- */
+    const pagares=(t.invoiceInPayments||[]).filter(p=>EFECTOS.includes(p.method)&&p.dueDate&&p.dueDate.slice(0,7)===M).map(p=>{
+      const f=fIn[p.invoiceId]||{};
+      const deDatt=idBanco(p.paidBank)||idBanco(p.issuingBank);
+      const banco=deDatt||elecciones[p.id]||'';
+      const importe=r2(+p.amount||0);
+      return {tipo:'pagare',clave:p.id,concepto:(pro[f.supplierId]||'—'),factura:f.number||'',metodo:p.method,fecha:p.dueDate,banco,eligible:!deDatt,
+        importe,pagado:p.paid?importe:0,pendiente:p.paid?0:importe,estado:p.paid?'pagado':'pendiente'};
+    }).sort((a,b)=>a.fecha.localeCompare(b.fecha));
+
+    /* ---- Otros gastos puntuales del mes ---- */
+    const otros=(t.oneOffExpenses||[]).filter(o=>o.dueDate&&o.dueDate.slice(0,7)===M).map(o=>{
+      const importe=r2(+o.amount||0);
+      return {tipo:'otro',clave:o.id,concepto:o.concept,fecha:o.dueDate,banco:idBanco(o.paid?o.paidBank:o.bank)||principal,
+        importe,pagado:o.paid?importe:0,pendiente:o.paid?0:importe,estado:o.paid?'pagado':'pendiente'};
+    }).filter(x=>x.banco!=='cash');
+
+    /* ---- Saldo de hoy por banco: último saldo de datt + cobros − pagos apuntados después ---- */
+    const ult={};
+    (t.bankBalances||[]).forEach(b=>{ if(b.date>hoy) return; const o=ult[b.bankId]; if(!o||b.date>=o.date) ult[b.bankId]=b; });
+    const mov={}; cuentas.forEach(a=>mov[a.id]={cobros:0,pagos:0});
+    const apunta=(banco,fecha,importe)=>{ const b=mov[banco]; if(!b||!fecha||fecha>hoy) return; const desde=ult[banco]?.date||''; if(fecha<=desde) return;
+      if(importe>=0) b.cobros+=importe; else b.pagos-=importe; };
+    const porDefecto=m=>m==='Efectivo'?'cash':principal;
+    const conPagosIn=new Set((t.invoiceInPayments||[]).map(p=>p.invoiceId)), conPagosOut=new Set((t.invoiceOutPayments||[]).map(p=>p.invoiceId));
+    (t.fixedExpensePayments||[]).forEach(p=>{const f=(t.fixedExpenses||[]).find(x=>x.id===p.expenseId)||{}; apunta(idBanco(p.bank)||idBanco(f.bank)||principal,p.date,-(+p.amount||0));});
+    (t.invoiceInPayments||[]).forEach(p=>{ if(p.paid) apunta(idBanco(p.paidBank)||idBanco(p.issuingBank)||elecciones[p.id]||porDefecto(p.method),p.paidDate,-(+p.amount||0)); });
+    (t.invoicesIn||[]).forEach(f=>{ if(f.paid&&!conPagosIn.has(f.id)) apunta(idBanco(f.paidBank)||porDefecto(f.paymentMethod),f.paidDate,-(+f.amount||0)); });
+    (t.oneOffExpenses||[]).forEach(o=>{ if(o.paid) apunta(idBanco(o.paidBank)||idBanco(o.bank)||principal,o.paidDate,-(+o.amount||0)); });
+    (t.invoiceOutPayments||[]).forEach(p=>{ if(p.collected) apunta(idBanco(p.collectedBank)||idBanco(p.remittanceBankId)||porDefecto(p.method),p.collectedDate,+(+p.amount||0)); });
+    (t.invoicesOut||[]).forEach(f=>{ if(f.collected&&!conPagosOut.has(f.id)) apunta(idBanco(f.collectedBank)||porDefecto(f.paymentMethod),f.collectedDate,+(+f.amount||0)); });
+    (t.bankTransfers||[]).forEach(x=>{ if(!x.fromId||!x.toId) return; apunta(x.fromId,x.date,-(+x.amount||0)); apunta(x.toId,x.date,+(+x.amount||0)); });
+
+    const lineas=[...fijos,...pagares,...otros];
+    const hayLibres=lineas.some(l=>!l.banco);
+    const cols=[...cuentas.map(a=>({id:a.id,nombre:a.name})),...(hayLibres?[{id:'',nombre:'Sin banco'}]:[])];
+    const totalCol=(campo,lista)=>cols.map(c=>r2((lista||lineas).filter(l=>l.banco===c.id).reduce((s,l)=>s+l[campo],0)));
+    const saldo=cols.map(c=>{ if(!c.id) return null; const u=ult[c.id]; const m=mov[c.id];
+      return {fecha:u?.date||'',base:r2(u?.amount||0),cobros:r2(m.cobros),pagos:r2(m.pagos),hoy:r2((u?.amount||0)+m.cobros-m.pagos)}; });
+    const pendiente=totalCol('pendiente');
+    return {M,hoy,cols,fijos,pagares,otros,pendiente,pagado:totalCol('pagado'),saldo,
+      diferencia:cols.map((c,i)=>saldo[i]?r2(saldo[i].hoy-pendiente[i]):null),
+      vencidas:lineas.filter(l=>l.pendiente>0&&l.fecha<hoy).length};
+  };
+
+  /* ---------- Pantalla ---------- */
+  window.pintarPagos=function(t){
+    const el=document.getElementById('pg-cuerpo'); if(!el||!t) return;
+    const inp=document.getElementById('pg-mes'); if(!inp.value) inp.value=hoyISO().slice(0,7);
+    const p=ULT=calcularPagos(t,inp.value);
+    const nc=p.cols.length;
+    const estado=l=>l.estado==='pagado'?'<span class="chip ok">pagado</span>':l.estado==='parcial'?`<span class="chip">pagado ${num(l.pagado)}</span>`:l.estado==='sin'?'<span class="chip venc">sin importe en datt</span>':l.fecha<p.hoy?'<span class="chip venc">vencido</span>':'';
+    const celdas=l=>p.cols.map(c=>{
+      if(l.banco!==c.id) return '<td class="num"></td>';
+      if(l.sinImporte||l.escrito) return `<td class="num"><input class="pg-imp" id="pg-i-${esc(l.clave).replace(/[^a-zA-Z0-9]/g,'_')}" data-clave="${esc(l.clave)}" inputmode="decimal" value="${l.escrito?num(l.importe):''}" placeholder="importe" aria-label="Importe ${esc(l.concepto)}"><span class="solo-print">${l.escrito?eur(l.importe):'—'}</span></td>`;
+      return `<td class="num">${eur(l.estado==='pagado'?l.importe:l.pendiente)}</td>`;
+    }).join('');
+    const selector=l=>l.eligible?` <select class="pg-banco" id="pg-b-${esc(l.clave).replace(/[^a-zA-Z0-9]/g,'_')}" data-clave="${esc(l.clave)}" aria-label="Banco del pagaré">${['<option value="">Elegir banco…</option>',...p.cols.filter(c=>c.id).map(c=>`<option value="${c.id}"${l.banco===c.id?' selected':''}>${esc(c.nombre)}</option>`)].join('')}</select>`:'';
+    const fila=l=>`<tr class="${l.estado==='pagado'?'hecho':''}"><td class="nm">${esc(l.concepto)}${l.definitivo===true?' <span class="chip ok">factura</span>':l.definitivo===false?' <span class="chip">previsto</span>':''}${l.factura?` <span class="sub">fra. ${esc(l.factura)} · ${esc(l.metodo)}</span>`:''}${selector(l)} ${estado(l)}</td><td class="f">${fd(l.fecha)}</td>${celdas(l)}</tr>`;
+    const seccion=(titulo,lista)=>lista.length?`<tr class="sec"><td colspan="${nc+2}">${titulo}</td></tr>${lista.map(fila).join('')}`:'';
+    const pie=(t,vals,cls)=>`<tr class="${cls||''}"><td colspan="2">${t}</td>${vals.map(v=>`<td class="num">${v==null?'—':eur(v)}</td>`).join('')}</tr>`;
+    const nombreMes=MESES[+p.M.slice(5,7)-1]+' '+p.M.slice(0,4);
+    el.innerHTML=`
+      <div class="pv-imp-titulo">Hermanos Vizcaíno, S.C.A. · Pagos por banco · ${nombreMes}</div>
+      ${p.vencidas?`<div class="pv-aviso">Hay ${p.vencidas} pago${p.vencidas>1?'s':''} con fecha pasada que en datt no figura${p.vencidas>1?'n':''} como pagado${p.vencidas>1?'s':''}. Si ya se pagaron, márcalos en tesorería y se quitarán de aquí.</div>`:''}
+      <div class="pv-resumen">${p.cols.map((c,i)=>c.id?`<div class="pv-kpi ${p.diferencia[i]<0?'falta':''}"><span class="lbl">${esc(c.nombre)}</span><span class="val ${p.diferencia[i]>=0?'pos':'neg'}">${eur(p.diferencia[i])}</span><span class="det">Saldo hoy ${eur(p.saldo[i].hoy)} − pendiente ${eur(p.pendiente[i])}${p.diferencia[i]<0?' · <strong>no llega</strong>':''}</span></div>`:`<div class="pv-kpi falta"><span class="lbl">Sin banco</span><span class="val">${eur(p.pendiente[i])}</span><span class="det">Pagarés sin banco elegido. No cuentan en ninguna columna.</span></div>`).join('')}</div>
+      <div class="pv-blk pg-tabla"><div class="pv-tw" style="max-height:none"><table>
+        <thead><tr><th>Concepto · ${nombreMes}</th><th>Fecha</th>${p.cols.map(c=>`<th class="num">${esc(c.nombre)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${GRUPOS.map((g,k)=>seccion(g[1],p.fijos.filter(f=>f.grupo===k))).join('')}
+          ${seccion('Pagarés a pagar',p.pagares)}
+          ${seccion('Otros gastos',p.otros)}
+          ${!(p.fijos.length+p.pagares.length+p.otros.length)?`<tr><td colspan="${nc+2}" class="vacio">No hay pagos en ${nombreMes}</td></tr>`:''}
+        </tbody>
+        <tfoot>
+          ${pie('Pendiente de pagar',p.pendiente)}
+          ${pie('Ya pagado este mes',p.pagado,'muted')}
+          ${pie('Saldo en el banco hoy',p.saldo.map(s=>s?s.hoy:null))}
+          ${pie('Diferencia (saldo − pendiente)',p.diferencia,'dif')}
+        </tfoot>
+      </table></div>
+      <div class="pv-nota">${p.saldo.map((s,i)=>s?`<div><strong>${esc(p.cols[i].nombre)}:</strong> último saldo en datt ${s.fecha?fd(s.fecha):'sin saldo'} ${eur(s.base)} + cobros apuntados después ${eur(s.cobros)} − pagos apuntados después ${eur(s.pagos)} = ${eur(s.hoy)}</div>`:'').join('')}</div></div>`;
+    el.querySelectorAll('select.pg-banco').forEach(s=>s.addEventListener('change',()=>{ if(s.value) elecciones[s.dataset.clave]=s.value; else delete elecciones[s.dataset.clave]; guardar('pagos.bancos',elecciones); const id=s.id; pintarPagos(t); document.getElementById(id)?.focus(); }));
+    el.querySelectorAll('input.pg-imp').forEach(i=>i.addEventListener('change',()=>{ const v=parseFloat(i.value.trim().replace(/−/g,'-').replace(/\s|€/g,'').replace(/\./g,'').replace(',','.'));
+      if(isNaN(v)) delete importes[i.dataset.clave]; else importes[i.dataset.clave]=v; guardar('pagos.importes',importes); const id=i.id; pintarPagos(t); document.getElementById(id)?.focus(); }));
+  };
+
+  /* ---------- Excel de esta pestaña ---------- */
+  window.excelPagos=function(){
+    const p=ULT; if(!p) return;
+    const cab=['Concepto','Fecha','Estado',...p.cols.map(c=>c.nombre)];
+    const filas=[['Hermanos Vizcaíno, S.C.A.'],['Pagos por banco · '+MESES[+p.M.slice(5,7)-1]+' '+p.M.slice(0,4)],[],cab];
+    const neg=[0,1,3];
+    const sec=(t,l)=>{ if(!l.length) return; neg.push(filas.length); filas.push([t]);
+      l.forEach(x=>filas.push([x.concepto+(x.factura?' (fra. '+x.factura+')':''),fd(x.fecha),x.estado==='pagado'?'Pagado':x.estado==='parcial'?'Parcial':x.estado==='sin'?'Sin importe':'Pendiente',...p.cols.map(c=>c.id===x.banco?(x.estado==='pagado'?x.importe:x.pendiente):'')])); };
+    GRUPOS.forEach((g,k)=>sec(g[1].toUpperCase(),p.fijos.filter(f=>f.grupo===k))); sec('PAGARÉS A PAGAR',p.pagares); sec('OTROS GASTOS',p.otros);
+    filas.push([]);
+    const pie=(t,v)=>{neg.push(filas.length);filas.push([t,'','',...v.map(x=>x==null?'':x)]);};
+    pie('PENDIENTE DE PAGAR',p.pendiente); pie('YA PAGADO ESTE MES',p.pagado); pie('SALDO EN EL BANCO HOY',p.saldo.map(s=>s?s.hoy:null)); pie('DIFERENCIA',p.diferencia);
+    descargarBlob(crearExcel([{nombre:'Pagos por banco',filas,anchos:[46,12,12,...p.cols.map(()=>16)],negritas:neg}]),'pagos_por_banco_'+p.M+'.xlsx');
+  };
+})();
+
+</script>
+<script>
 /* ===== PREVISIÓN DE TESORERÍA: conexión, pantalla, imprimir y Excel ===== */
 (function(){
   /* ---------- 1. CONEXIÓN CON DATT (misma dirección /exec y clave que tesorería) ---------- */
   // Igual que el panel: POST con texto JSON {action:'getAll', key} a la dirección /exec.
   // Devuelve {ok, data:{coleccion:[{id, json}]}}. La dirección y la clave las escribe cada usuaria
   // y se guardan solo en su navegador; no van dentro de este archivo.
-  const TABLAS=['invoicesOut','invoiceOutPayments','invoicesIn','invoiceInPayments','bankBalances','bankAccounts','clients','suppliers'];
+  const TABLAS=['invoicesOut','invoiceOutPayments','invoicesIn','invoiceInPayments','bankBalances','bankAccounts','clients','suppliers','fixedExpenses','fixedExpensePayments','oneOffExpenses','bankTransfers'];
   async function cargarDatt(url,clave){
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'getAll',key:clave})});
     if(!r.ok) throw new Error('el servicio respondió '+r.status);
@@ -345,6 +592,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
       :b.ajustado?` <span class="chip">a mano · datt ${num(b.datt)}</span> <button type="button" class="mini" data-volver="${esc(b.k)}">Volver a datt</button>`
       :b.sinSaldo?' <span class="chip venc">sin saldo a esta fecha</span>':'';
     const bancos=`<div class="pv-tw pv-bancos"><table><thead><tr><th>Cuenta</th><th>Saldo a</th><th class="num">Importe</th></tr></thead><tbody>${p.bancos.map(b=>`<tr${b.previsto?' class="prev"':''}><td>${esc(b.nombre)}${etiqueta(b)}${b.previsto?` <span class="chip">+${num(p.cobradoPrevisto.reduce((s,x)=>s+x.importe,0))} cobros · −${num(p.pagadoPrevisto.reduce((s,x)=>s+x.importe,0))} pagos</span>`:''}</td><td class="f">${b.manual||b.previsto||b.ajustado?'—':fd(b.fecha)}</td><td class="num">${celda(b)}</td></tr>`).join('')}</tbody><tfoot><tr><td colspan="2">Total</td><td class="num">${eur(p.tBancos)}</td></tr></tfoot></table></div>
+      ${(p.sinSaldo.cobros||p.sinSaldo.pagos)?`<div class="pv-aviso" style="margin:10px 16px 0">Desde el último saldo del banco (${fd(p.sinSaldo.desde)}) han vencido pagarés: +${eur(p.sinSaldo.cobros)} de clientes y −${eur(p.sinSaldo.pagos)} a proveedores. Ya no salen en las listas; si el saldo del banco no los recoge todavía, pon el saldo real a mano.</div>`:''}
       <form class="pv-nueva" id="pv-nueva"><input id="pv-nueva-nombre" placeholder="Otra cuenta (nombre)" required aria-label="Nombre de la cuenta"><input id="pv-nueva-imp" inputmode="decimal" placeholder="0,00" required aria-label="Importe"><button type="submit" class="mini">Añadir</button></form>
       <div class="pv-nota">Puedes cambiar cualquier saldo: escribe el importe y pulsa Intro. Un saldo de datt cambiado a mano vale solo para la fecha elegida.</div>`;
     const compras=tabla([{t:'Nº factura'},{t:'Proveedor'},{t:'Fecha'},{t:'Importe',n:1}],
@@ -387,6 +635,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     $('#pv-nueva')?.addEventListener('submit',e=>{e.preventDefault();const n=$('#pv-nueva-nombre').value.trim(),v=leerImp($('#pv-nueva-imp').value);
       if(!n||isNaN(v))return; extras.push({clave:'c'+Date.now(),nombre:n.toUpperCase(),importe:v});guardar('prevision.extras',extras);pintar();});
     $('#pv-btn-print').disabled=$('#pv-btn-xlsx').disabled=false;
+    if(window.pintarPagos) pintarPagos(DATOS);
   }
 
   /* ---------- 3. IMPRIMIR: abre todos los bloques mientras se imprime ---------- */
@@ -421,7 +670,17 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     $('#pv-fecha').addEventListener('change',pintar);
     $('#pv-hoy').addEventListener('click',()=>{$('#pv-fecha').value=hoy;pintar()});
     $('#pv-btn-print').addEventListener('click',()=>window.print());
-    $('#pv-btn-xlsx').addEventListener('click',descargarExcel);
+    $('#pv-btn-xlsx').addEventListener('click',()=>pestana==='pagos'?excelPagos():descargarExcel());
+    let pestana=leer('prevision.pestana','prev');
+    const verPestana=k=>{pestana=k;guardar('prevision.pestana',k);
+      document.querySelectorAll('.pv-tabs button').forEach(b=>b.setAttribute('aria-selected',b.dataset.tab===k?'true':'false'));
+      $('#pv-cuerpo').hidden=k!=='prev'; $('#pg-cuerpo').hidden=k!=='pagos';
+      $('#pv-ctl-fecha').hidden=k!=='prev'; $('#pv-ctl-mes').hidden=k!=='pagos';};
+    document.querySelectorAll('.pv-tabs button').forEach(b=>b.addEventListener('click',()=>verPestana(b.dataset.tab)));
+    $('#pg-mes').value=hoy.slice(0,7);
+    $('#pg-mes').addEventListener('change',()=>{ if(DATOS&&$('#pg-mes').value) pintarPagos(DATOS); });
+    $('#pg-este').addEventListener('click',()=>{$('#pg-mes').value=hoy.slice(0,7); if(DATOS) pintarPagos(DATOS);});
+    verPestana(pestana);
     if(datosDePrueba){DATOS=datosDePrueba;$('#pv-login').hidden=true;pintar();return;}
     const con=leer('prevision.conexion',null);
     if(con){$('#pv-url').value=con.url||'';$('#pv-clave').value=con.clave||'';}
@@ -435,7 +694,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     $('#pv-login').addEventListener('submit',e=>{e.preventDefault();entrar();});
     $('#pv-recargar').addEventListener('click',entrar);
     $('#pv-salir').addEventListener('click',()=>{try{localStorage.removeItem('prevision.conexion')}catch(_){}
-      DATOS=null;$('#pv-cuerpo').innerHTML='';$('#pv-url').value='';$('#pv-clave').value='';$('#pv-login').hidden=false;$('#pv-salir').hidden=true;$('#pv-recargar').hidden=true;
+      DATOS=null;$('#pv-cuerpo').innerHTML='';$('#pg-cuerpo').innerHTML='';$('#pv-url').value='';$('#pv-clave').value='';$('#pv-login').hidden=false;$('#pv-salir').hidden=true;$('#pv-recargar').hidden=true;
       $('#pv-btn-print').disabled=$('#pv-btn-xlsx').disabled=true;});
     if(con&&con.url&&con.clave) entrar();
   };
