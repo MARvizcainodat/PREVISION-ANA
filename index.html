@@ -160,6 +160,10 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
   <div id="pg-cuerpo" hidden></div>
 </div></div>
 <script>
+/* Cuenta corriente: sin tipo o tipo «cuenta» (fuera confirmings y líneas de descuento) */
+window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
+</script>
+<script>
 /* ===== PREVISIÓN DE TESORERÍA: cálculo a una fecha =====
    calcularPrevision(datt, fecha, extras)
    - datt: { invoicesOut, invoiceOutPayments, invoicesIn, invoiceInPayments, bankBalances, bankAccounts, clients, suppliers }
@@ -229,11 +233,11 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     /* ---- BANCOS: último saldo con fecha hasta el corte ---- */
     const ult={};
     (t.bankBalances||[]).forEach(b=>{ if(b.date>corte) return; const o=ult[b.bankId]; if(!o||b.date>=o.date) ult[b.bankId]=b; });
-    const bancos=(t.bankAccounts||[]).filter(a=>!a.archived&&!a.type)        // fuera confirmings y líneas de descuento
+    const bancos=(t.bankAccounts||[]).filter(a=>!a.archived&&esCuenta(a))        // fuera confirmings y líneas de descuento
       .map(a=>({nombre:a.name,fecha:ult[a.id]?.date||'',importe:r2(ult[a.id]?.amount||0),sinSaldo:!ult[a.id]}));
     if(ult.cash && ult.cash.amount) bancos.push({nombre:'CAJA',fecha:ult.cash.date,importe:r2(ult.cash.amount)});
     // Pagarés vencidos después del último saldo del banco principal: aún no están en ese saldo
-    const princ=(t.bankAccounts||[]).find(a=>a.main)||(t.bankAccounts||[]).find(a=>!a.type);
+    const princ=(t.bankAccounts||[]).find(a=>a.main)||(t.bankAccounts||[]).find(a=>esCuenta(a));
     const desde=princ&&ult[princ.id]?ult[princ.id].date:'';
     const sinSaldo={desde,cobros:sum(vencidosCobro.filter(x=>x.vence>desde)),pagos:sum(vencidosPago.filter(x=>x.vence>desde))};
     (extras||[]).forEach(e=>bancos.push({nombre:e.nombre,fecha:'',importe:r2(+e.importe||0),manual:true,clave:e.clave}));
@@ -382,7 +386,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
 
   window.calcularPagos=function(t,M){
     const hoy=hoyISO();
-    const cuentas=(t.bankAccounts||[]).filter(a=>!a.archived&&!a.type);
+    const cuentas=(t.bankAccounts||[]).filter(a=>!a.archived&&esCuenta(a));
     cuentas.sort((a,b)=>(a.main?1:0)-(b.main?1:0));              // como Ana: Unicaja y luego Santander
     const principal=(cuentas.find(a=>a.main)||cuentas[0]||{}).id;
     const porNombre={}; cuentas.forEach(a=>porNombre[a.name.toUpperCase()]=a.id);
@@ -441,7 +445,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     const pagares=(t.invoiceInPayments||[]).filter(p=>EFECTOS.includes(p.method)&&p.dueDate&&p.dueDate.slice(0,7)===M).map(p=>{
       const f=fIn[p.invoiceId]||{};
       const deDatt=idBanco(p.paidBank)||idBanco(p.issuingBank);
-      const banco=deDatt||elecciones[p.id]||'';
+      const banco=deDatt||elecciones[p.id]||principal;   // sin banco en datt ni elegido: al principal (Santander)
       const importe=r2(+p.amount||0);
       return {tipo:'pagare',clave:p.id,concepto:(pro[f.supplierId]||'—'),factura:f.number||'',metodo:p.method,fecha:p.dueDate,banco,eligible:!deDatt,
         importe,pagado:p.paid?importe:0,pendiente:p.paid?0:importe,estado:p.paid?'pagado':'pendiente'};
@@ -495,7 +499,7 @@ body{margin:0;background:var(--page-bg);color:var(--page-fg)}
     const pagares=[].concat(...res.map(r=>r.pagares)).filter(hasta).sort((a,c)=>a.fecha.localeCompare(c.fecha));
     const otros=[].concat(...res.map(r=>r.otros)).filter(hasta).sort((a,c)=>a.fecha.localeCompare(c.fecha));
     const cuentas=b.cols.filter(c=>c.id);
-    const principal=((t.bankAccounts||[]).find(a=>a.main&&!a.archived&&!a.type)||cuentas[0]||{}).id;
+    const principal=((t.bankAccounts||[]).find(a=>a.main&&!a.archived&&esCuenta(a))||cuentas[0]||{}).id;
     const idOk=v=>cuentas.some(c=>c.id===v)?v:'';
     const cli={}; (t.clients||[]).forEach(c=>cli[c.id]=c.name);
     const fOut={}; (t.invoicesOut||[]).forEach(f=>fOut[f.id]=f);
