@@ -192,7 +192,12 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
     const fOut={}; (t.invoicesOut||[]).forEach(f=>fOut[f.id]=f);
     const fIn={};  (t.invoicesIn||[]).forEach(f=>fIn[f.id]=f);
     const porFactura=(lista)=>{const m={}; (lista||[]).forEach(p=>(m[p.invoiceId]=m[p.invoiceId]||[]).push(p)); return m;};
-    const pagOut=porFactura(t.invoiceOutPayments), pagIn=porFactura(t.invoiceInPayments);
+    // Pagarés agrupados (un pagaré que paga varias facturas, p. ej. Edificios Complejos): no tienen invoiceId,
+    // tienen «allocations» con lo que va a cada factura. Para restar de cada factura se reparten;
+    // en la cartera salen una sola vez, con su importe real.
+    const agrupados=(t.invoiceOutPayments||[]).filter(p=>!p.invoiceId&&Array.isArray(p.allocations)&&p.allocations.length);
+    const repartidos=[].concat(...agrupados.map(p=>p.allocations.map(a=>({...p,invoiceId:a.invoiceId,amount:+a.amount||0,agrupado:true}))));
+    const pagOut=porFactura((t.invoiceOutPayments||[]).filter(p=>p.invoiceId).concat(repartidos)), pagIn=porFactura(t.invoiceInPayments);
 
     /* ---- VENTAS ---- */
     const ventas=[], cartera=[], vencidosCobro=[], vencidosPago=[];
@@ -204,6 +209,7 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
       const resto=cobrada?0:r2(f.amount-pagos.reduce((s,p)=>s+(+p.amount||0),0));
       if(resto>0.005) ventas.push({numero:f.number,fecha:f.date,vence:f.dueDate||'',nombre:cli[f.clientId]||'—',importe:resto});
       pagos.forEach(p=>{
+        if(p.agrupado) return;                                   // los agrupados van a la cartera aparte (abajo)
         const c=fCobro(p);
         if(c && c<=corte) return;                               // ya cobrado en esa fecha
         const rem=(p.remesado||p.negotiated) && (p.remittanceDate||'')<=corte;
@@ -211,6 +217,16 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
         if(p.dueDate && p.dueDate<=corte){ vencidosCobro.push({vence:p.dueDate,importe:r2(+p.amount||0)}); return; }  // vencido = cobrado
         cartera.push({numero:f.number,nombre:cli[f.clientId]||'—',vence:p.dueDate||'',tipo:p.method||'',remesado:!!(p.remesado||p.negotiated),importe:r2(+p.amount||0)});
       });
+    });
+
+    agrupados.forEach(p=>{
+      if(fRecibido(p)>corte) return;
+      const c=fCobro(p); if(c && c<=corte) return;
+      if((p.remesado||p.negotiated) && (p.remittanceDate||'')<=corte) return;
+      if(p.dueDate && p.dueDate<=corte){ vencidosCobro.push({vence:p.dueDate,importe:r2(+p.amount||0)}); return; }
+      const nums=p.allocations.map(a=>(fOut[a.invoiceId]||{}).number).filter(Boolean);
+      cartera.push({numero:[...new Set(nums)].join(', '),nombre:cli[p.clientId]||cli[(fOut[p.allocations[0].invoiceId]||{}).clientId]||'—',vence:p.dueDate||'',tipo:p.method||'',
+        efecto:p.effectNumber||'',remesado:!!(p.remesado||p.negotiated),importe:r2(+p.amount||0)});
     });
 
     /* ---- COMPRAS ---- */
@@ -531,8 +547,10 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
     const cli={}; (t.clients||[]).forEach(c=>cli[c.id]=c.name);
     const fOut={}; (t.invoicesOut||[]).forEach(f=>fOut[f.id]=f);
     const cobros=(t.invoiceOutPayments||[]).filter(p=>EFECTOS.includes(p.method)&&!p.collected&&!p.negotiated&&p.dueDate&&p.dueDate>=hoy&&p.dueDate<=H).map(p=>{
-      const f=fOut[p.invoiceId]||{}; const importe=r2(+p.amount||0);
-      return {tipo:'cobro',clave:'c'+p.id,concepto:cli[f.clientId]||'—',factura:f.number||'',metodo:p.method,remesado:!!p.remesado,fecha:p.dueDate,
+      const al=Array.isArray(p.allocations)?p.allocations:[];   // pagarés agrupados: sin invoiceId, con reparto
+      const f=fOut[p.invoiceId]||fOut[(al[0]||{}).invoiceId]||{}; const importe=r2(+p.amount||0);
+      const nums=p.invoiceId?(f.number||''):[...new Set(al.map(a=>(fOut[a.invoiceId]||{}).number).filter(Boolean))].join(', ');
+      return {tipo:'cobro',clave:'c'+p.id,concepto:cli[p.clientId]||cli[f.clientId]||'—',factura:nums+(p.effectNumber?' · nº '+p.effectNumber:''),metodo:p.method,remesado:!!p.remesado,fecha:p.dueDate,
         banco:idOk(p.remittanceBankId)||idOk(p.collectedBank)||principal,importe,pagado:0,pendiente:importe,estado:'cobro'};
     }).sort((a,c)=>a.fecha.localeCompare(c.fecha));
     const lineas=[...fijos,...pagares,...domic,...otros];
@@ -666,7 +684,7 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
     const ref=p.fecha;
     const ventas=tabla([{t:'Nº factura'},{t:'Cliente'},{t:'Fecha'},{t:'Importe',n:1}],
       p.ventas.map(v=>`<tr><td>${esc(v.numero)}</td><td class="nm">${esc(v.nombre)}</td><td class="f">${fd(v.fecha)}</td><td class="num">${eur(v.importe)}</td></tr>`),p.tVentas);
-    const cartera=p.carteraMes.length?p.carteraMes.map(m=>`<details class="pv-mes" data-k="c-${m.clave}"${abiertos.has('c-'+m.clave)?' open':''}><summary><span>${m.nombre} <span class="chip">${m.lineas.length}</span></span><span class="s">${eur(m.importe)}</span></summary>${tabla([{t:'Vence'},{t:'Cliente'},{t:'Factura'},{t:'Importe',n:1}],m.lineas.map(v=>`<tr><td class="f">${fd(v.vence)||'—'}</td><td class="nm">${esc(v.nombre)} <span class="chip">${esc(v.tipo)}</span>${v.remesado?'<span class="chip">remesado</span>':''}${venc(v.vence,ref)}</td><td>${esc(v.numero)}</td><td class="num">${eur(v.importe)}</td></tr>`))}</details>`).join(''):'<div class="pv-nota">No hay pagarés de clientes pendientes a esta fecha.</div>';
+    const cartera=p.carteraMes.length?p.carteraMes.map(m=>`<details class="pv-mes" data-k="c-${m.clave}"${abiertos.has('c-'+m.clave)?' open':''}><summary><span>${m.nombre} <span class="chip">${m.lineas.length}</span></span><span class="s">${eur(m.importe)}</span></summary>${tabla([{t:'Vence'},{t:'Cliente'},{t:'Factura'},{t:'Importe',n:1}],m.lineas.map(v=>`<tr><td class="f">${fd(v.vence)||'—'}</td><td class="nm">${esc(v.nombre)} <span class="chip">${esc(v.tipo)}</span>${v.efecto?` <span class="sub">nº ${esc(v.efecto)}</span>`:''}${v.remesado?'<span class="chip">remesado</span>':''}${venc(v.vence,ref)}</td><td>${esc(v.numero)}</td><td class="num">${eur(v.importe)}</td></tr>`))}</details>`).join(''):'<div class="pv-nota">No hay pagarés de clientes pendientes a esta fecha.</div>';
     const celda=b=>b.previsto?eur(b.importe):`<input id="pv-b-${esc(b.manual?b.clave:b.k).replace(/[^a-zA-Z0-9]/g,'_')}" ${b.manual?`data-clave="${esc(b.clave)}"`:`data-k="${esc(b.k)}"`} inputmode="decimal" value="${num(b.importe)}" aria-label="Saldo ${esc(b.nombre)}"><span class="solo-print">${eur(b.importe)}</span>`;
     const etiqueta=b=>b.manual?` <span class="chip">a mano</span>${b.clave!=='vs'?` <button type="button" class="mini" data-quitar="${esc(b.clave)}" aria-label="Quitar ${esc(b.nombre)}">Quitar</button>`:''}`
       :b.ajustado?` <span class="chip">a mano · datt ${num(b.datt)}</span> <button type="button" class="mini" data-volver="${esc(b.k)}">Volver a datt</button>`
