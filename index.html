@@ -451,6 +451,32 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
         importe,pagado:p.paid?importe:0,pendiente:p.paid?0:importe,estado:p.paid?'pagado':'pendiente'};
     }).sort((a,b)=>a.fecha.localeCompare(b.fecha));
 
+    /* ---- Facturas domiciliadas que vencen en el mes ----
+       Forma de pago «Domiciliado» en la factura o, si no tiene, en la ficha del proveedor.
+       Fuera: pagadas, las que van con pagaré/confirming y los proveedores enlazados a un gasto fijo (ya salen arriba).
+       En el mes en curso también salen las de meses anteriores que siguen sin pagar.
+       Banco: el de la factura; si no, el elegido aquí; si no, el que diga la nota del proveedor (p. ej. «UNICAJA»); si no, el principal. */
+    const sup={}; (t.suppliers||[]).forEach(x=>sup[x.id]=x);
+    const conFijo=new Set((t.fixedExpenses||[]).map(x=>x.supplierId).filter(Boolean));
+    const pagosDe={}; (t.invoiceInPayments||[]).forEach(x=>(pagosDe[x.invoiceId]=pagosDe[x.invoiceId]||[]).push(x));
+    const bancoNota=x=>{ const n=String(x.notes||'').toUpperCase(); const c=cuentas.find(a=>a.name.toUpperCase().split(/[^A-ZÑ]+/).some(w=>w.length>3&&n.includes(w))); return c?c.id:''; };
+    const enMes=v=>v.slice(0,7)===M||(M===hoy.slice(0,7)&&v<M+'-01');
+    const domic=[];
+    (t.invoicesIn||[]).forEach(f=>{
+      const pr=sup[f.supplierId]||{};
+      if(f.paid||conFijo.has(f.supplierId)||!/domicil/i.test(f.paymentMethod||pr.paymentMethod||'')) return;
+      const ps=pagosDe[f.id]||[]; if(ps.some(x=>EFECTOS.includes(x.method))) return;
+      const vence=f.dueDate||(f.date&&pr.paymentTermDays?sumarDias(f.date,+pr.paymentTermDays):f.date)||'';
+      const resto=r2((+f.amount||0)-ps.filter(x=>x.paid).reduce((a,x)=>a+(+x.amount||0),0));
+      const filas=ps.length?ps.filter(x=>!x.paid).map(x=>({id:x.id,vence:x.dueDate||vence,importe:r2(+x.amount||0)})):(resto>0.005?[{id:f.id,vence,importe:resto}]:[]);
+      filas.forEach(x=>{ if(!x.vence||!enMes(x.vence)) return;
+        const deDatt=idBanco(f.paidBank)||idBanco(f.bank);
+        domic.push({tipo:'domic',clave:'d'+x.id,concepto:pr.name||'—',factura:f.number||'',metodo:'Domiciliado',fecha:x.vence,
+          banco:deDatt||elecciones['d'+x.id]||bancoNota(pr)||principal,eligible:!deDatt,importe:x.importe,pagado:0,pendiente:x.importe,estado:'pendiente'});
+      });
+    });
+    domic.sort((a,b)=>a.fecha.localeCompare(b.fecha));
+
     /* ---- Otros gastos puntuales del mes ---- */
     const otros=(t.oneOffExpenses||[]).filter(o=>o.dueDate&&o.dueDate.slice(0,7)===M).map(o=>{
       const importe=r2(+o.amount||0);
@@ -474,14 +500,14 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
     (t.invoicesOut||[]).forEach(f=>{ if(f.collected&&!conPagosOut.has(f.id)) apunta(idBanco(f.collectedBank)||porDefecto(f.paymentMethod),f.collectedDate,+(+f.amount||0)); });
     (t.bankTransfers||[]).forEach(x=>{ if(!x.fromId||!x.toId) return; apunta(x.fromId,x.date,-(+x.amount||0)); apunta(x.toId,x.date,+(+x.amount||0)); });
 
-    const lineas=[...fijos,...pagares,...otros];
+    const lineas=[...fijos,...pagares,...domic,...otros];
     const hayLibres=lineas.some(l=>!l.banco);
     const cols=[...cuentas.map(a=>({id:a.id,nombre:a.name})),...(hayLibres?[{id:'',nombre:'Sin banco'}]:[])];
     const totalCol=(campo,lista)=>cols.map(c=>r2((lista||lineas).filter(l=>l.banco===c.id).reduce((s,l)=>s+l[campo],0)));
     const saldo=cols.map(c=>{ if(!c.id) return null; const u=ult[c.id]; const m=mov[c.id];
       return {fecha:u?.date||'',base:r2(u?.amount||0),cobros:r2(m.cobros),pagos:r2(m.pagos),hoy:r2((u?.amount||0)+m.cobros-m.pagos)}; });
     const pendiente=totalCol('pendiente');
-    return {M,hoy,cols,fijos,pagares,otros,pendiente,pagado:totalCol('pagado'),saldo,
+    return {M,hoy,cols,fijos,pagares,domic,otros,pendiente,pagado:totalCol('pagado'),saldo,
       diferencia:cols.map((c,i)=>saldo[i]?r2(saldo[i].hoy-pendiente[i]):null),
       vencidas:lineas.filter(l=>l.pendiente>0&&l.fecha<hoy).length};
   };
@@ -498,6 +524,7 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
     const fijos=[].concat(...res.map(r=>r.fijos)).filter(hasta);
     const pagares=[].concat(...res.map(r=>r.pagares)).filter(hasta).sort((a,c)=>a.fecha.localeCompare(c.fecha));
     const otros=[].concat(...res.map(r=>r.otros)).filter(hasta).sort((a,c)=>a.fecha.localeCompare(c.fecha));
+    const domic=[].concat(...res.map(r=>r.domic)).filter(hasta).sort((a,c)=>a.fecha.localeCompare(c.fecha));
     const cuentas=b.cols.filter(c=>c.id);
     const principal=((t.bankAccounts||[]).find(a=>a.main&&!a.archived&&esCuenta(a))||cuentas[0]||{}).id;
     const idOk=v=>cuentas.some(c=>c.id===v)?v:'';
@@ -508,12 +535,12 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
       return {tipo:'cobro',clave:'c'+p.id,concepto:cli[f.clientId]||'—',factura:f.number||'',metodo:p.method,remesado:!!p.remesado,fecha:p.dueDate,
         banco:idOk(p.remittanceBankId)||idOk(p.collectedBank)||principal,importe,pagado:0,pendiente:importe,estado:'cobro'};
     }).sort((a,c)=>a.fecha.localeCompare(c.fecha));
-    const lineas=[...fijos,...pagares,...otros];
+    const lineas=[...fijos,...pagares,...domic,...otros];
     const cols=[...cuentas,...(lineas.some(l=>!l.banco)?[{id:'',nombre:'Sin banco'}]:[])];
     const totalCol=(campo,lista)=>cols.map(c=>r2(lista.filter(l=>l.banco===c.id).reduce((s,l)=>s+l[campo],0)));
     const saldo=cols.map(c=>c.id?b.saldo[b.cols.findIndex(x=>x.id===c.id)]:null);
     const pendiente=totalCol('pendiente',lineas), cobrar=totalCol('importe',cobros);
-    return {M:M0,H,hoy,cols,fijos,pagares,otros,cobros,pendiente,pagado:totalCol('pagado',lineas),cobrar,saldo,
+    return {M:M0,H,hoy,cols,fijos,pagares,domic,otros,cobros,pendiente,pagado:totalCol('pagado',lineas),cobrar,saldo,
       diferencia:cols.map((c,i)=>saldo[i]?r2(saldo[i].hoy+cobrar[i]-pendiente[i]):null),
       vencidas:lineas.filter(l=>l.pendiente>0&&l.fecha<hoy).length};
   };
@@ -534,7 +561,7 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
       if(l.estado==='cobro') return `<td class="num pos">+${eur(l.importe)}</td>`;
       return `<td class="num">${eur(l.estado==='pagado'?l.importe:l.pendiente)}</td>`;
     }).join('');
-    const selector=l=>l.eligible?` <select class="pg-banco" id="pg-b-${esc(l.clave).replace(/[^a-zA-Z0-9]/g,'_')}" data-clave="${esc(l.clave)}" aria-label="Banco del pagaré">${['<option value="">Elegir banco…</option>',...p.cols.filter(c=>c.id).map(c=>`<option value="${c.id}"${l.banco===c.id?' selected':''}>${esc(c.nombre)}</option>`)].join('')}</select>`:'';
+    const selector=l=>l.eligible?` <select class="pg-banco" id="pg-b-${esc(l.clave).replace(/[^a-zA-Z0-9]/g,'_')}" data-clave="${esc(l.clave)}" aria-label="Banco del pago">${['<option value="">Elegir banco…</option>',...p.cols.filter(c=>c.id).map(c=>`<option value="${c.id}"${l.banco===c.id?' selected':''}>${esc(c.nombre)}</option>`)].join('')}</select>`:'';
     const fila=l=>`<tr class="${l.estado==='pagado'?'hecho':''}"><td class="nm">${esc(l.concepto)}${l.definitivo===true?' <span class="chip ok">factura</span>':l.definitivo===false?' <span class="chip">previsto</span>':''}${l.factura?` <span class="sub">fra. ${esc(l.factura)} · ${esc(l.metodo)}</span>`:''}${selector(l)} ${estado(l)}</td><td class="f">${fd(l.fecha)}</td>${celdas(l)}</tr>`;
     const seccion=(titulo,lista)=>lista.length?`<tr class="sec"><td colspan="${nc+2}">${titulo}</td></tr>${lista.map(fila).join('')}`:'';
     const pie=(t,vals,cls)=>`<tr class="${cls||''}"><td colspan="2">${t}</td>${vals.map(v=>`<td class="num">${v==null?'—':eur(v)}</td>`).join('')}</tr>`;
@@ -550,9 +577,10 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
         <tbody>
           ${GRUPOS.map((g,k)=>seccion(g[1],p.fijos.filter(f=>f.grupo===k))).join('')}
           ${seccion('Pagarés a pagar',p.pagares)}
+          ${seccion('Domiciliaciones de proveedores',p.domic)}
           ${seccion('Otros gastos',p.otros)}
           ${conCobros?seccion('Cobros previstos: pagarés de clientes que vencen hasta el '+fd(p.H),p.cobros):''}
-          ${!(p.fijos.length+p.pagares.length+p.otros.length)?`<tr><td colspan="${nc+2}" class="vacio">No hay pagos en ${nombreMes}</td></tr>`:''}
+          ${!(p.fijos.length+p.pagares.length+p.domic.length+p.otros.length)?`<tr><td colspan="${nc+2}" class="vacio">No hay pagos en ${nombreMes}</td></tr>`:''}
         </tbody>
         <tfoot>
           ${pie('Pendiente de pagar',p.pendiente)}
@@ -577,7 +605,7 @@ window.esCuenta=a=>!a.type||String(a.type).toLowerCase()==='cuenta';
     const neg=[0,1,3];
     const sec=(t,l)=>{ if(!l.length) return; neg.push(filas.length); filas.push([t]);
       l.forEach(x=>filas.push([x.concepto+(x.factura?' (fra. '+x.factura+')':''),fd(x.fecha),x.estado==='pagado'?'Pagado':x.estado==='parcial'?'Parcial':x.estado==='sin'?'Sin importe':x.estado==='cobro'?'Cobro previsto':'Pendiente',...p.cols.map(c=>c.id===x.banco?(x.estado==='pagado'||x.estado==='cobro'?x.importe:x.pendiente):'')])); };
-    GRUPOS.forEach((g,k)=>sec(g[1].toUpperCase(),p.fijos.filter(f=>f.grupo===k))); sec('PAGARÉS A PAGAR',p.pagares); sec('OTROS GASTOS',p.otros); if(p.H) sec('COBROS PREVISTOS (PAGARÉS DE CLIENTES)',p.cobros);
+    GRUPOS.forEach((g,k)=>sec(g[1].toUpperCase(),p.fijos.filter(f=>f.grupo===k))); sec('PAGARÉS A PAGAR',p.pagares); sec('DOMICILIACIONES DE PROVEEDORES',p.domic); sec('OTROS GASTOS',p.otros); if(p.H) sec('COBROS PREVISTOS (PAGARÉS DE CLIENTES)',p.cobros);
     filas.push([]);
     const pie=(t,v)=>{neg.push(filas.length);filas.push([t,'','',...v.map(x=>x==null?'':x)]);};
     pie('PENDIENTE DE PAGAR',p.pendiente); pie(p.H?'YA PAGADO':'YA PAGADO ESTE MES',p.pagado); pie('SALDO EN EL BANCO HOY',p.saldo.map(s=>s?s.hoy:null));
